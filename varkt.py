@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
 
 # Константы
 G = 6.67430e-11  # гравитационная постоянная, м^3/(кг*с^2)
@@ -44,69 +45,59 @@ def gravitational_force(m, h):
     """Гравитационная сила."""
     return G * M_Earth * m / (R_Earth + h) ** 2
 
-def simulate_trajectory(stages, dt=0.1, t_max=60):
-    """Моделирование полета ракеты."""
-    # Временные параметры
-    time = np.arange(0, t_max, dt)
+def dynamics(t, y, stages):
+    """Функция для solve_ivp, описывающая динамику системы."""
+    h, v, m = y  # Высота, скорость, масса
 
-    # Инициализация массивов
-    h = np.zeros_like(time)  # высота
-    v = np.zeros_like(time)  # скорость
-    m = np.zeros_like(time)  # масса
+    if m <= sum(stage['dry_mass'] for stage in stages):
+        thrust = 0  # Если топливо закончилось, тяги нет
+        dm_dt = 0
+    else:
+        for stage in stages:
+            stage_fuel_mass = stage['fuel_mass']
+            stage_dry_mass = stage['dry_mass']
 
-    # Начальные условия
-    h[0] = 0
-    v[0] = 0
-    m[0] = sum(stage["fuel_mass"] + stage["dry_mass"] for stage in stages)
+            if m > stage_dry_mass:
+                thrust = stage['thrust']
+                isp = stage['isp']
+                mdot = thrust / (isp * 9.81)
+                dm_dt = -mdot
+                break
 
-    current_stage = 0
-    fuel_remaining = stages[current_stage]["fuel_mass"]
+    F_gravity = gravitational_force(m, h)
+    F_drag = 0.5 * air_density(h) * v**2 * 0.3 * 10
+    a = (thrust - F_gravity - F_drag) / m
 
-    for i in range(1, len(time)):
-        if current_stage < len(stages):
-            stage = stages[current_stage]
+    return [v, a, dm_dt]
 
-            if fuel_remaining > 0:
-                F_thrust = stage["thrust"]
-                mdot = F_thrust / (stage["isp"] * 9.81)  # Расход топлива, кг/с
-                fuel_consumed = mdot * dt
-                fuel_remaining -= fuel_consumed
+# Начальные условия
+h0 = 0  # Начальная высота, м
+v0 = 0  # Начальная скорость, м/с
+m0 = sum(stage["fuel_mass"] + stage["dry_mass"] for stage in stages)  # Общая начальная масса, кг
 
-                if fuel_remaining < 0:
-                    fuel_consumed += fuel_remaining  # Уточнение на последнем шаге
-                    fuel_remaining = 0
-
-                m[i] = m[i-1] - fuel_consumed
-            else:
-                current_stage += 1
-                if current_stage < len(stages):
-                    fuel_remaining = stages[current_stage]["fuel_mass"]
-                F_thrust = 0
-                m[i] = m[i-1]
-        else:
-            F_thrust = 0
-            m[i] = m[i-1]
-
-        F_gravity = gravitational_force(m[i-1], h[i-1])
-        F_drag = 0.5 * air_density(h[i-1]) * v[i-1]**2 * 0.3 * 10
-
-        a = (F_thrust - F_gravity - F_drag) / m[i-1]
-        v[i] = v[i-1] + a * dt
-        h[i] = h[i-1] + v[i-1] * dt
-
-    return time, h, v, m
-
-# Моделирование
-dt = 0.1
+# Время моделирования
+dt = 0.1  # Шаг времени
 simulation_time = 60  # секунд
-time, height, velocity, mass = simulate_trajectory(stages, dt, simulation_time)
+
+t_span = (0, simulation_time)  # Временной интервал, сек
+t_eval = np.arange(0, simulation_time, dt)  # Точки времени для вывода результата
+
+y0 = [h0, v0, m0]
+
+# Численное решение
+solution = solve_ivp(dynamics, t_span, y0, t_eval=t_eval, args=(stages,))
+
+# Извлечение решения
+height = solution.y[0]
+velocity = solution.y[1]
+mass = solution.y[2]
 
 # Построение графиков
 plt.figure(figsize=(15, 10))
 
 # График скорости от времени
 plt.subplot(3, 1, 1)
-plt.plot(time, velocity, label="Скорость", color="blue")
+plt.plot(solution.t, velocity, label="Скорость", color="blue")
 plt.title("Зависимость скорости от времени")
 plt.xlabel("Время (с)")
 plt.ylabel("Скорость (м/с)")
@@ -115,7 +106,7 @@ plt.legend()
 
 # График массы от времени
 plt.subplot(3, 1, 2)
-plt.plot(time, mass, label="Масса", color="green")
+plt.plot(solution.t, mass, label="Масса", color="green")
 plt.title("Зависимость массы от времени")
 plt.xlabel("Время (с)")
 plt.ylabel("Масса (кг)")
@@ -124,7 +115,7 @@ plt.legend()
 
 # График высоты от времени
 plt.subplot(3, 1, 3)
-plt.plot(time, height, label="Высота", color="red")
+plt.plot(solution.t, height, label="Высота", color="red")
 plt.title("Зависимость высоты от времени")
 plt.xlabel("Время (с)")
 plt.ylabel("Высота (м)")
