@@ -1,108 +1,134 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
 
 # Константы
 G = 6.67430e-11  # гравитационная постоянная, м^3/(кг*с^2)
-M = 5.972e24  # масса Земли, кг
-R = 6371000  # радиус Земли, м
-rho_0 = 1.225  # плотность воздуха на уровне моря, кг/м^3
-T = 288.15  # температура, К
-R_air = 287.05  # газовая постоянная для воздуха, Дж/(кг*К)
-g0 = 9.81  # ускорение свободного падения на уровне моря, м/с^2
+M_Earth = 5.972e24  # масса Земли, кг
+R_Earth = 6371e3  # радиус Земли, м
+rho0 = 1.225  # плотность воздуха на уровне моря, кг/м^3
+H = 8500  # масштаб высоты атмосферы, м
 
-# Параметры ракеты
-m0 = 300000  # начальная масса ракеты, кг
-dm_dt = 500  # расход топлива, кг/с
-F0 = 3.5e6  # тяга на старте, Н
-F1 = 4.0e6  # тяга в вакууме, Н
-Cf = 0.5  # коэффициент лобового сопротивления
-S = 10  # площадь поперечного сечения ракеты, м^2
-phi0 = 90  # начальный угол наклона, градусы
-beta = -0.1  # изменение угла наклона, градусы/с
-burn_time = m0 / dm_dt  # время работы двигателя, с
+# Параметры ракеты Луна-2
+stages = [
+    {  # Первая ступень
+        "engines": 4,
+        "thrust": 4 * 994e3,  # тяга в вакууме, Н
+        "fuel_mass": 4 * 43400,  # масса топлива, кг
+        "dry_mass": 4 * 3750,  # сухая масса, кг
+        "burn_time": 118,  # время работы, с
+        "isp": 315  # удельный импульс, с
+    },
+    {  # Вторая ступень
+        "engines": 1,
+        "thrust": 990e3,  # тяга в вакууме, Н
+        "fuel_mass": 86200,  # масса топлива, кг
+        "dry_mass": 7150,  # сухая масса, кг
+        "burn_time": 310,  # время работы, с
+        "isp": 315  # удельный импульс, с
+    },
+    {  # Третья ступень
+        "engines": 1,
+        "thrust": 54e3,  # тяга в вакууме, Н
+        "fuel_mass": 5000,  # масса топлива, кг
+        "dry_mass": 355,  # сухая масса, кг
+        "burn_time": 240,  # время работы, с
+        "isp": 326  # удельный импульс, с
+    }
+]
 
-# Упрощенные уравнения движения
-def simplified_equations_fixed(t, y):
-    h, x, vy, vx, m, phi_deg = y  # высота, положение, вертикальная скорость, горизонтальная скорость, масса, угол
-    phi = np.radians(phi_deg)  # угол в радианах
+def air_density(h):
+    """Расчет плотности воздуха."""
+    return rho0 * np.exp(-h / H)
 
-    # Текущая тяга
-    if t <= burn_time:
-        F_t = F0 + (F1 - F0) * (t / burn_time)
-    else:
-        F_t = 0  # после сгорания топлива тяга отсутствует
+def gravitational_force(m, h):
+    """Гравитационная сила."""
+    return G * M_Earth * m / (R_Earth + h) ** 2
 
-    # Масса уменьшается только во время работы двигателя
-    dm_dt_actual = -dm_dt if t <= burn_time else 0
+def simulate_trajectory(stages, dt=0.1, t_max=60):
+    """Моделирование полета ракеты."""
+    # Временные параметры
+    time = np.arange(0, t_max, dt)
 
-    # Сила тяжести
-    g = G * M / (R + h)**2
+    # Инициализация массивов
+    h = np.zeros_like(time)  # высота
+    v = np.zeros_like(time)  # скорость
+    m = np.zeros_like(time)  # масса
 
-    # Ограничение на высоту для избежания переполнения
-    h = max(h, 0)
+    # Начальные условия
+    h[0] = 0
+    v[0] = 0
+    m[0] = sum(stage["fuel_mass"] + stage["dry_mass"] for stage in stages)
 
-    # Плотность воздуха
-    rho = rho_0 * np.exp(-M * g * h / (R_air * T)) if h < 1e5 else 0  # Плотность стремится к нулю на больших высотах
+    current_stage = 0
+    fuel_remaining = stages[current_stage]["fuel_mass"]
 
-    # Скорость и сила сопротивления
-    v = np.sqrt(vx**2 + vy**2)
-    F_drag = Cf * S * rho * v**2 / 2 if v != 0 else 0
-    F_drag_x = F_drag * (vx / v) if v != 0 else 0
-    F_drag_y = F_drag * (vy / v) if v != 0 else 0
+    for i in range(1, len(time)):
+        if current_stage < len(stages):
+            stage = stages[current_stage]
 
-    # Проверка на нулевую массу
-    if m <= 0:
-        return [0, 0, 0, 0, 0, 0]  # Остановка всех изменений
+            if fuel_remaining > 0:
+                F_thrust = stage["thrust"]
+                mdot = F_thrust / (stage["isp"] * 9.81)  # Расход топлива, кг/с
+                fuel_consumed = mdot * dt
+                fuel_remaining -= fuel_consumed
 
-    # Ускорения
-    ay = (F_t * np.sin(phi) - m * g - F_drag_y) / m
-    ax = (F_t * np.cos(phi) - F_drag_x) / m
+                if fuel_remaining < 0:
+                    fuel_consumed += fuel_remaining  # Уточнение на последнем шаге
+                    fuel_remaining = 0
 
-    # Угловая скорость
-    dphi_dt = beta
+                m[i] = m[i-1] - fuel_consumed
+            else:
+                current_stage += 1
+                if current_stage < len(stages):
+                    fuel_remaining = stages[current_stage]["fuel_mass"]
+                F_thrust = 0
+                m[i] = m[i-1]
+        else:
+            F_thrust = 0
+            m[i] = m[i-1]
 
-    return [vy, vx, ay, ax, dm_dt_actual, dphi_dt]
+        F_gravity = gravitational_force(m[i-1], h[i-1])
+        F_drag = 0.5 * air_density(h[i-1]) * v[i-1]**2 * 0.3 * 10
 
-# Начальные условия
-y0 = [0, 0, 0, 0, m0, phi0]  # [h, x, vy, vx, m, phi]
+        a = (F_thrust - F_gravity - F_drag) / m[i-1]
+        v[i] = v[i-1] + a * dt
+        h[i] = h[i-1] + v[i-1] * dt
 
-# Время моделирования
-t_max = 600  # секунд
-t_span = (0, t_max)
-t_eval = np.linspace(0, t_max, 1000)
+    return time, h, v, m
 
-# Решение системы с исправлениями
-sol_fixed = solve_ivp(simplified_equations_fixed, t_span, y0, t_eval=t_eval, method='RK45')
-
-# Извлечение данных
-h_fixed, x_fixed, vy_fixed, vx_fixed, m_fixed, phi_fixed = sol_fixed.y
+# Моделирование
+dt = 0.1
+simulation_time = 60  # секунд
+time, height, velocity, mass = simulate_trajectory(stages, dt, simulation_time)
 
 # Построение графиков
-plt.figure(figsize=(12, 8))
+plt.figure(figsize=(15, 10))
 
-# Высота
+# График скорости от времени
 plt.subplot(3, 1, 1)
-plt.plot(sol_fixed.t, h_fixed / 1000, label="Высота")
-plt.xlabel("Время, с")
-plt.ylabel("Высота, км")
-plt.grid()
+plt.plot(time, velocity, label="Скорость", color="blue")
+plt.title("Зависимость скорости от времени")
+plt.xlabel("Время (с)")
+plt.ylabel("Скорость (м/с)")
+plt.grid(True)
 plt.legend()
 
-# Скорость
+# График массы от времени
 plt.subplot(3, 1, 2)
-plt.plot(sol_fixed.t, np.sqrt(vx_fixed**2 + vy_fixed**2), label="Скорость")
-plt.xlabel("Время, с")
-plt.ylabel("Скорость, м/с")
-plt.grid()
+plt.plot(time, mass, label="Масса", color="green")
+plt.title("Зависимость массы от времени")
+plt.xlabel("Время (с)")
+plt.ylabel("Масса (кг)")
+plt.grid(True)
 plt.legend()
 
-# Угол наклона
+# График высоты от времени
 plt.subplot(3, 1, 3)
-plt.plot(sol_fixed.t, phi_fixed, label="Угол наклона")
-plt.xlabel("Время, с")
-plt.ylabel("Угол, градусы")
-plt.grid()
+plt.plot(time, height, label="Высота", color="red")
+plt.title("Зависимость высоты от времени")
+plt.xlabel("Время (с)")
+plt.ylabel("Высота (м)")
+plt.grid(True)
 plt.legend()
 
 plt.tight_layout()
